@@ -52,10 +52,13 @@ edata <- read_csv(I(edata),
                col_names=c('fintime','ipsum','event','region','timestamp','itemid','group'),
                show_col_types = FALSE)
 
-edata <- inner_join(edata, adata, by = c("fintime", "ipsum"))
+## Use LEFT JOIN to keep all experimental data, even without age
+edata <- left_join(edata, adata, by = c("fintime", "ipsum"))
 edata <- edata %>% mutate(id=paste0(fintime,ipsum), .before=event, .keep="unused")
 
 cat("Experimental data loaded:", nrow(edata), "observations\n")
+cat("Participants with age data:", sum(!is.na(edata$age) & edata$age > 0), "unique IDs\n")
+cat("Participants without age data:", sum(is.na(edata$age) | edata$age == 0), "observations\n")
 
 ## Get question data
 qdata <- str_subset(ldata, coll('Question'))
@@ -173,10 +176,14 @@ cat("========================================\n")
 cat("4. FILTERING AND CLEANING DATA\n")
 cat("========================================\n\n")
 
-edata <- edata %>% filter(region==critical_region, age < 30)
+# Filter to critical region only (keep all ages)
+edata <- edata %>% filter(region==critical_region)
 
-cat("Filtered to critical region and age < 30\n")
-cat("Remaining observations:", nrow(edata), "\n\n")
+cat("Filtered to critical region (all ages)\n")
+cat("Total observations:", nrow(edata), "\n")
+cat("Unique participants:", n_distinct(edata$id), "\n")
+cat("  - With age data:", sum(!is.na(edata$age)), "observations\n")
+cat("  - Without age data:", sum(is.na(edata$age)), "observations\n\n")
 
 edata <- edata %>% mutate(RRT=RT - (m*text_len+c))
 
