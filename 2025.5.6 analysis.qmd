@@ -1,0 +1,258 @@
+---
+title: "Sarcasm Analysis"
+author: "MC"
+format:
+  html:
+    embed-resources: true
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+options(digits = 2,scipen = 2)
+```
+
+## Read in and Tidy Raw Data
+
+The code to do this is documented in the source.
+
+```{r}
+#| label: read-data
+#| echo: false
+
+## read in the file line-by-line
+ldata <- c(read_lines('results_prod.csv'),read_lines('results_prod_sona.csv'))
+
+## get age
+adata <- str_subset(ldata,'age,.*EnterReturn')
+
+adata <- read_csv(I(adata),
+                  col_types='cc________i___',
+                  col_names=c('fintime','ipsum','age'))
+
+### there's a duplicate entry here, we need to get rid of it
+
+adata <- adata |>
+  group_by(fintime, ipsum) |>
+  mutate(occurrence_number = row_number()) |>
+  ungroup() |>
+  filter(occurrence_number != 2) |>
+  select(-occurrence_number)
+
+
+## select just the experimental sentences
+edata <- str_subset(ldata,'exp,.*Key')
+
+## read these in as a csv (see the `I(edata)` trick); ignore columns
+## that are unlikely to be useful
+
+edata <- read_csv(I(edata),
+               col_types='cc_i____c__d_cc__',
+               col_names=c(
+                 'fintime',
+                 'ipsum',
+                 'event',
+                 'region',
+                 'timestamp',
+                 'itemid',
+                 'group'))
+
+edata <- inner_join(edata,adata)
+
+## try and make a totally unique participant id from "data uploaded time"
+## and IP checksum
+edata <- edata |> mutate(id=paste0(fintime,ipsum),.before=event,.keep="unused")
+
+## now get the question-answering data
+qdata <- str_subset(ldata,coll('Question'))            
+
+## filler items are missing a column, so we add a comma after the "filler" text                 
+qdata <- str_replace(qdata,'(filler_[0-9]+)','\\1,"FILL"')
+
+## for some reason, a comma turns up on the RHS of qdata lines
+qdata <- str_replace(qdata,',$','')
+             
+## then read csv from memory again    
+qdata <- read_csv(I(qdata),
+               col_types='cc_i_____cc__c_i__',
+               col_names=c(
+                 'fintime',
+                 'ipsum',
+                 'event',
+                 'question',
+                 'answer',
+                 'itemid',
+                 'keypress'
+               ))
+
+## calculate question-answering accuracy, add to edata, remove unwanted
+qdata <- qdata |> mutate(CORRECT=case_when(
+  answer=='Yes' & keypress==1 ~ 1,
+  answer=='No'  & keypress==0 ~ 1,
+  .default = 0
+))
+
+qdata <- qdata |> mutate(id=paste0(fintime,ipsum),.before=event,.keep="unused")
+qa <- qdata |> group_by(id) |> summarise(accuracy=mean(CORRECT))
+edata <- left_join(edata,qa)
+rm(ldata,qdata,qa)
+
+# here, we split the itemid into useful information
+edata <- edata |> separate_wider_delim(itemid,'_',
+                                       names=c('item_name',
+                                               'format',
+                                               'type'),
+                                       cols_remove=FALSE)
+
+edata <- edata |> mutate(format = case_match(format,
+                                             'ind' ~ 'indirect',
+                                             'dir' ~ 'direct',
+                                             .default = 'ERROR'),
+                         type = case_match(type,
+                                           'lit' ~ 'literal',
+                                           'sarc' ~ 'sarcastic',
+                                           .default = 'ERROR'))
+
+## by lagging the timestamp against itself we have an easy way of
+## calculating "current timestamp - previous timestamp" (i.e., time
+## to press key).  After than we don't need the start timestamp for
+## each item.  This is our main DV
+
+edata <- edata |> group_by(id,item_name) |>
+  mutate(prevtime=lag(timestamp),prev2time=lag(timestamp,n=2)) |>
+  mutate(RT=timestamp-prevtime,R2T=timestamp-prev2time) |>
+  select(-c(timestamp,prevtime,prev2time)) |>
+  filter(!str_detect(region,'-start$')) |> ungroup()
+
+```
+Now that the data's read in, we need to identify the critical regions, which we do from the stimuli dataset.
+
+```{r}
+# we only really need one piece of information from the stimuli files
+
+stimuli <- read_csv('stimuli_corrected.csv') |>
+  rename(itemid=item_id,critical_region=`critical region`) |>
+  select(itemid,critical_region) 
+
+edata <- left_join(edata,stimuli)
+
+```
+
+OK.  For kicks (and because we can) we're going to regress reading time against region length now, to calculate "residual reading time".
+
+```{r}
+## separate out region info
+
+edata <- edata |> separate_wider_delim(region,'-',
+                                       names=c('region','text'),
+                                       too_many='merge') |>
+  mutate(region=as.numeric(region)+1,text=URLdecode(text),text_len=str_length(text),.after=text)
+
+CRITICAL_LENGTH=1000
+
+do_reg <- function(y,x) {
+  m <- lm(y~x,subset=x < CRITICAL_LENGTH)
+  return(coef(m))
+}
+
+edata <- left_join(edata,
+edata |> group_by(id) |> summarise(c=do_reg(RT,text_len)[1],m=do_reg(RT,text_len)[2]))
+
+```
+```{r}
+#| echo: false
+
+outliers <- function(x, index=NULL, sds=2.5) {
+  if (is.data.frame(x)) {
+    as.data.frame(sapply(x, outliers, index, sds))
+  } else if (is.matrix(x)) {
+    apply(x, 2, outliers, index, sds)
+  } else if (is.list(x)) {
+    lapply(x, outliers, index, sds)
+  } else if (is.vector(x)) {
+    if (!is.null(index)) {
+      if (!is.list(index)) {
+        index <- list(index) # make sure index is a list
+      }
+      unsplit(outliers(split(x,index),index=NULL,sds=sds),index)
+    } else {
+      bound <- sds*sd(x,na.rm=TRUE)
+      m <- mean(x,na.rm=TRUE)
+      (abs(x-m) > bound)
+    }
+  } else {
+    cat("outliers not implemented for class ",class(x),"\n",sep="")
+  }
+}
+
+```
+
+
+OK, by now we're probably only interested in the critical region.  We want to identify that region, and analyse reaction times and critical region reading times, having removed outliers and checked that all QA accuracy is greater than 80% (it is, I checked).
+
+**NB., from here, code is really scrappy as I try different things out:  Don't just run it!**
+
+```{r}
+edata <- edata |> filter(region==critical_region,
+                         age < 30)
+
+edata <- edata |> mutate(RRT=RT - (m*text_len+c))
+
+edata |> group_by(format,type) |> summarise(RT=mean(RT,na.rm=T),R2T=mean(R2T,na.rm=T))
+
+edata <- edata |> mutate(RT=ifelse(RT<200,NA,RT))
+
+l200 <- sum(is.na(edata$RT))
+
+edata <- edata |> group_by(id) |> mutate(outlier=outliers(RT),sds=3)
+
+o3 <- sum(edata$outlier,na.rm=T)
+
+edata <- edata |> group_by(id) |> mutate(ol2=outliers(RRT),sds=3)
+
+o23 <- sum(edata$ol2,na.rm=T)
+
+```
+
+`r l200` reaction times were removed because they were less than 200ms. `r o3` additional outliers were greater than 3 sds from the participant-specific mean.
+
+
+### CHECK REGION NUMBERS (SEE VINCENT CODE)
+
+```{r}
+
+library(buildmer)
+
+edata <- edata |> mutate(RT=ifelse(outlier,NA,RT))
+edata <- edata |> mutate(RRT=ifelse(ol2,NA,RRT))
+
+edata <- edata |> mutate(format=as.factor(format),type=as.factor(type))
+
+contrasts(edata$format)=contr.sum(2)
+contrasts(edata$type)=contr.sum(2)
+model <- buildmer(RT~format*type+(format*type|id)+(format*type|item_name),data=edata)
+
+```
+
+
+## Special Bits
+
+Try and find out which materials are working
+
+```{r}
+library(tinytable)
+
+
+edata |> filter(format=='direct') |> group_by(item_name,type) |>
+  summarise(rt=mean(RT,na.rm=T)) |> pivot_wider(names_from=type,values_from=rt) |>
+  mutate(effect = sarcastic-literal,.keep="unused") |> arrange(effect) ->
+  sarc_effect
+
+edata <- left_join(edata, sarc_effect)
+
+edata <- edata |> filter(effect<0)
+
+```
+
