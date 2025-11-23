@@ -1,0 +1,515 @@
+---
+title: "Sarcasm Analysis with Exaggeration Factor"
+author: "MC"
+format:
+  html:
+    embed-resources: true
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(buildmer)
+library(tinytable)
+options(digits = 2, scipen = 2)
+```
+
+## Read in and Tidy Raw Data
+
+The code to do this is documented in the source.
+
+```{r}
+#| label: read-data
+#| echo: false
+
+## read in the file line-by-line
+ldata <- c(read_lines('results_prod.csv'),read_lines('results_prod_sona.csv'))
+
+## get age
+adata <- str_subset(ldata,'age,.*EnterReturn')
+
+adata <- read_csv(I(adata),
+                  col_types='cc________i___',
+                  col_names=c('fintime','ipsum','age'))
+
+### there's a duplicate entry here, we need to get rid of it
+
+adata <- adata |>
+  group_by(fintime, ipsum) |>
+  mutate(occurrence_number = row_number()) |>
+  ungroup() |>
+  filter(occurrence_number != 2) |>
+  select(-occurrence_number)
+
+
+## select just the experimental sentences
+edata <- str_subset(ldata,'exp,.*Key')
+
+## read these in as a csv (see the `I(edata)` trick); ignore columns
+## that are unlikely to be useful
+
+edata <- read_csv(I(edata),
+               col_types='cc_i____c__d_cc__',
+               col_names=c(
+                 'fintime',
+                 'ipsum',
+                 'event',
+                 'region',
+                 'timestamp',
+                 'itemid',
+                 'group'))
+
+edata <- inner_join(edata,adata)
+
+## try and make a totally unique participant id from "data uploaded time"
+## and IP checksum
+edata <- edata |> mutate(id=paste0(fintime,ipsum),.before=event,.keep="unused")
+
+## now get the question-answering data
+qdata <- str_subset(ldata,coll('Question'))
+
+## filler items are missing a column, so we add a comma after the "filler" text
+qdata <- str_replace(qdata,'(filler_[0-9]+)','\\1,"FILL"')
+
+## for some reason, a comma turns up on the RHS of qdata lines
+qdata <- str_replace(qdata,',$','')
+
+## then read csv from memory again
+qdata <- read_csv(I(qdata),
+               col_types='cc_i_____cc__c_i__',
+               col_names=c(
+                 'fintime',
+                 'ipsum',
+                 'event',
+                 'question',
+                 'answer',
+                 'itemid',
+                 'keypress'
+               ))
+
+## calculate question-answering accuracy, add to edata, remove unwanted
+qdata <- qdata |> mutate(CORRECT=case_when(
+  answer=='Yes' & keypress==1 ~ 1,
+  answer=='No'  & keypress==0 ~ 1,
+  .default = 0
+))
+
+qdata <- qdata |> mutate(id=paste0(fintime,ipsum),.before=event,.keep="unused")
+qa <- qdata |> group_by(id) |> summarise(accuracy=mean(CORRECT))
+edata <- left_join(edata,qa)
+rm(ldata,qdata,qa)
+
+# here, we split the itemid into useful information
+edata <- edata |> separate_wider_delim(itemid,'_',
+                                       names=c('item_name',
+                                               'format',
+                                               'type'),
+                                       cols_remove=FALSE)
+
+edata <- edata |> mutate(format = case_match(format,
+                                             'ind' ~ 'indirect',
+                                             'dir' ~ 'direct',
+                                             .default = 'ERROR'),
+                         type = case_match(type,
+                                           'lit' ~ 'literal',
+                                           'sarc' ~ 'sarcastic',
+                                           .default = 'ERROR'))
+
+## by lagging the timestamp against itself we have an easy way of
+## calculating "current timestamp - previous timestamp" (i.e., time
+## to press key).  After than we don't need the start timestamp for
+## each item.  This is our main DV
+
+edata <- edata |> group_by(id,item_name) |>
+  mutate(prevtime=lag(timestamp),prev2time=lag(timestamp,n=2)) |>
+  mutate(RT=timestamp-prevtime,R2T=timestamp-prev2time) |>
+  select(-c(timestamp,prevtime,prev2time)) |>
+  filter(!str_detect(region,'-start$')) |> ungroup()
+
+```
+
+## Load Stimuli Information Including Exaggeration
+
+**[NEW]** Now we load the stimuli file and include the **Exaggeration** column.
+
+```{r}
+#| label: load-stimuli
+
+# Read stimuli file and extract critical region + exaggeration info
+stimuli <- read_csv('stimuli.csv') |>
+  rename(itemid = item_id, critical_region = `critical region`) |>
+  select(itemid, critical_region, Exaggeration)  # [NEW] Added Exaggeration column
+
+# Join with experimental data
+edata <- left_join(edata, stimuli)
+
+# [NEW] Convert Exaggeration to factor with meaningful labels
+edata <- edata |>
+  mutate(exaggeration = factor(Exaggeration,
+                               levels = c(0, 1),
+                               labels = c("non-exaggerated", "exaggerated")))
+
+# Check the distribution of exaggeration across items
+cat("Distribution of exaggeration across items:\n")
+edata |>
+  distinct(item_name, exaggeration) |>
+  count(exaggeration) |>
+  print()
+
+```
+
+## Residual Reading Time Calculation
+
+```{r}
+#| label: residual-rt
+
+## separate out region info
+edata <- edata |> separate_wider_delim(region,'-',
+                                       names=c('region','text'),
+                                       too_many='merge') |>
+  mutate(region=as.numeric(region)+1,text=URLdecode(text),text_len=str_length(text),.after=text)
+
+CRITICAL_LENGTH=1000
+
+do_reg <- function(y,x) {
+  m <- lm(y~x,subset=x < CRITICAL_LENGTH)
+  return(coef(m))
+}
+
+edata <- left_join(edata,
+edata |> group_by(id) |> summarise(c=do_reg(RT,text_len)[1],m=do_reg(RT,text_len)[2]))
+
+```
+
+## Outlier Detection Function
+
+```{r}
+#| label: outlier-function
+#| echo: false
+
+outliers <- function(x, index=NULL, sds=2.5) {
+  if (is.data.frame(x)) {
+    as.data.frame(sapply(x, outliers, index, sds))
+  } else if (is.matrix(x)) {
+    apply(x, 2, outliers, index, sds)
+  } else if (is.list(x)) {
+    lapply(x, outliers, index, sds)
+  } else if (is.vector(x)) {
+    if (!is.null(index)) {
+      if (!is.list(index)) {
+        index <- list(index) # make sure index is a list
+      }
+      unsplit(outliers(split(x,index),index=NULL,sds=sds),index)
+    } else {
+      bound <- sds*sd(x,na.rm=TRUE)
+      m <- mean(x,na.rm=TRUE)
+      (abs(x-m) > bound)
+    }
+  } else {
+    cat("outliers not implemented for class ",class(x),"\n",sep="")
+  }
+}
+
+```
+
+## Data Filtering and Outlier Removal
+
+```{r}
+#| label: filter-and-clean
+
+# Filter to critical region and age < 30
+edata <- edata |> filter(region==critical_region,
+                         age < 30)
+
+# Calculate residual reading time
+edata <- edata |> mutate(RRT=RT - (m*text_len+c))
+
+# Remove RTs < 200ms
+edata <- edata |> mutate(RT=ifelse(RT<200,NA,RT))
+l200 <- sum(is.na(edata$RT))
+
+# Remove outliers (>3 SDs from participant mean)
+edata <- edata |> group_by(id) |> mutate(outlier=outliers(RT, sds=3))
+o3 <- sum(edata$outlier,na.rm=T)
+
+# Remove outliers for residual RT
+edata <- edata |> group_by(id) |> mutate(ol2=outliers(RRT, sds=3))
+o23 <- sum(edata$ol2,na.rm=T)
+
+# Apply outlier filters
+edata <- edata |> mutate(RT=ifelse(outlier,NA,RT))
+edata <- edata |> mutate(RRT=ifelse(ol2,NA,RRT))
+
+```
+
+`r l200` reaction times were removed because they were less than 200ms. `r o3` additional outliers were greater than 3 sds from the participant-specific mean for RT. `r o23` outliers for residual RT.
+
+## **[NEW] Descriptive Statistics by Exaggeration**
+
+```{r}
+#| label: descriptives-exaggeration
+
+cat("\n=== Mean RT by Format, Type, and Exaggeration ===\n")
+desc_stats <- edata |>
+  group_by(format, type, exaggeration) |>
+  summarise(
+    n = sum(!is.na(RT)),
+    mean_RT = mean(RT, na.rm=TRUE),
+    sd_RT = sd(RT, na.rm=TRUE),
+    se_RT = sd_RT / sqrt(n),
+    .groups = "drop"
+  )
+
+print(desc_stats)
+
+cat("\n=== Sarcasm Effect (Sarcastic - Literal) by Exaggeration ===\n")
+sarcasm_effect <- desc_stats |>
+  select(format, type, exaggeration, mean_RT) |>
+  pivot_wider(names_from = type, values_from = mean_RT) |>
+  mutate(sarcasm_effect = sarcastic - literal)
+
+print(sarcasm_effect)
+
+```
+
+## **[NEW] Visualization: RT by Exaggeration**
+
+```{r}
+#| label: plot-exaggeration
+#| fig.width: 10
+#| fig.height: 6
+
+# Interaction plot: Type x Exaggeration
+ggplot(desc_stats, aes(x = type, y = mean_RT, color = exaggeration, group = exaggeration)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_RT - se_RT, ymax = mean_RT + se_RT),
+                width = 0.2, linewidth = 0.8) +
+  facet_wrap(~format) +
+  labs(
+    title = "Reading Time by Type and Exaggeration",
+    subtitle = "Split by Format (Direct vs Indirect)",
+    x = "Type",
+    y = "Mean RT (ms)",
+    color = "Exaggeration"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom")
+
+# Bar plot showing sarcasm effect by exaggeration
+ggplot(sarcasm_effect, aes(x = format, y = sarcasm_effect, fill = exaggeration)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    title = "Sarcasm Effect by Exaggeration",
+    subtitle = "Positive values = sarcastic read slower than literal",
+    x = "Format",
+    y = "Sarcasm Effect (ms)",
+    fill = "Exaggeration"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom")
+
+```
+
+## Main Statistical Model (Original)
+
+```{r}
+#| label: model-original
+
+# Prepare factors with sum contrasts
+edata <- edata |>
+  mutate(
+    format = as.factor(format),
+    type = as.factor(type)
+  )
+
+contrasts(edata$format) = contr.sum(2)
+contrasts(edata$type) = contr.sum(2)
+
+# Original model: Format x Type
+model_original <- buildmer(
+  RT ~ format*type + (format*type|id) + (format*type|item_name),
+  data = edata
+)
+
+cat("\n=== ORIGINAL MODEL: Format x Type ===\n")
+summary(model_original)
+
+```
+
+## **[NEW] Extended Model with Exaggeration**
+
+```{r}
+#| label: model-with-exaggeration
+
+# Prepare exaggeration factor with sum contrasts
+edata <- edata |> mutate(exaggeration = as.factor(exaggeration))
+contrasts(edata$exaggeration) = contr.sum(2)
+
+# Full 3-way model: Format x Type x Exaggeration
+cat("\n=== NEW MODEL: Format x Type x Exaggeration (3-way interaction) ===\n")
+
+model_exaggeration <- buildmer(
+  RT ~ format * type * exaggeration +
+    (format * type | id) +
+    (1 | item_name),  # Simplified random effects for convergence
+  data = edata
+)
+
+summary(model_exaggeration)
+
+# Alternative model focusing on Type x Exaggeration
+cat("\n=== FOCUSED MODEL: Type x Exaggeration (main interest) ===\n")
+
+model_type_exag <- buildmer(
+  RT ~ type * exaggeration + format +
+    (type * exaggeration | id) +
+    (1 | item_name),
+  data = edata
+)
+
+summary(model_type_exag)
+
+```
+
+## **[NEW] Analysis of Exaggeration Effect by Item**
+
+```{r}
+#| label: item-analysis-exaggeration
+
+cat("\n=== Item-Level Analysis: Sarcasm Effect by Exaggeration ===\n")
+
+item_analysis <- edata |>
+  group_by(item_name, exaggeration, format, type) |>
+  summarise(mean_rt = mean(RT, na.rm=TRUE), .groups = "drop") |>
+  pivot_wider(names_from = type, values_from = mean_rt) |>
+  mutate(sarcasm_effect = sarcastic - literal) |>
+  arrange(exaggeration, sarcasm_effect)
+
+# Show items with strongest sarcasm effect by exaggeration
+cat("\nExaggerated items:\n")
+item_analysis |>
+  filter(exaggeration == "exaggerated", format == "direct") |>
+  select(item_name, literal, sarcastic, sarcasm_effect) |>
+  print()
+
+cat("\nNon-exaggerated items:\n")
+item_analysis |>
+  filter(exaggeration == "non-exaggerated", format == "direct") |>
+  select(item_name, literal, sarcastic, sarcasm_effect) |>
+  print()
+
+# Statistical comparison
+cat("\n=== Mean Sarcasm Effect by Exaggeration ===\n")
+item_analysis |>
+  filter(format == "direct") |>
+  group_by(exaggeration) |>
+  summarise(
+    n_items = n(),
+    mean_effect = mean(sarcasm_effect, na.rm=TRUE),
+    sd_effect = sd(sarcasm_effect, na.rm=TRUE),
+    median_effect = median(sarcasm_effect, na.rm=TRUE)
+  ) |>
+  print()
+
+```
+
+## **[NEW] Filtering by Item Quality (with Exaggeration)**
+
+```{r}
+#| label: filter-good-items
+
+# Identify "good" items where sarcasm shows expected pattern (slower RT)
+cat("\n=== Filtering to 'Good' Items (sarcasm effect > 0 in direct format) ===\n")
+
+good_items <- item_analysis |>
+  filter(format == "direct", sarcasm_effect > 0) |>
+  pull(item_name)
+
+cat("Good items:", paste(good_items, collapse = ", "), "\n")
+cat("Number of good items:", length(good_items), "\n")
+
+# Check distribution by exaggeration
+cat("\nGood items by exaggeration:\n")
+item_analysis |>
+  filter(format == "direct", sarcasm_effect > 0) |>
+  count(exaggeration) |>
+  print()
+
+# Filter data to good items only
+edata_filtered <- edata |> filter(item_name %in% good_items)
+
+cat("\nN observations before filtering:", nrow(edata), "\n")
+cat("N observations after filtering:", nrow(edata_filtered), "\n")
+
+# Re-run model on filtered data
+cat("\n=== Model on Filtered 'Good' Items ===\n")
+
+model_filtered <- buildmer(
+  RT ~ format * type * exaggeration +
+    (format * type | id) +
+    (1 | item_name),
+  data = edata_filtered
+)
+
+summary(model_filtered)
+
+```
+
+## **[NEW] Direct Comparison: Exaggerated vs Non-Exaggerated**
+
+```{r}
+#| label: direct-comparison
+
+cat("\n=== T-test: Sarcasm Effect in Exaggerated vs Non-Exaggerated Items ===\n")
+
+# Calculate participant-level sarcasm effects
+participant_effects <- edata |>
+  filter(format == "direct") |>  # Focus on direct format for clearer effect
+  group_by(id, exaggeration, type) |>
+  summarise(mean_rt = mean(RT, na.rm=TRUE), .groups = "drop") |>
+  pivot_wider(names_from = type, values_from = mean_rt) |>
+  mutate(sarcasm_effect = sarcastic - literal)
+
+# T-test comparing sarcasm effect between exaggerated and non-exaggerated
+exag_effects <- participant_effects |>
+  filter(exaggeration == "exaggerated") |>
+  pull(sarcasm_effect)
+
+non_exag_effects <- participant_effects |>
+  filter(exaggeration == "non-exaggerated") |>
+  pull(sarcasm_effect)
+
+t_result <- t.test(exag_effects, non_exag_effects, paired = TRUE)
+
+cat("Paired t-test result:\n")
+print(t_result)
+
+cat("\nMean sarcasm effect for exaggerated items:", mean(exag_effects, na.rm=TRUE), "ms\n")
+cat("Mean sarcasm effect for non-exaggerated items:", mean(non_exag_effects, na.rm=TRUE), "ms\n")
+
+```
+
+## Summary and Interpretation
+
+### Key Questions Addressed:
+
+1. **Do exaggerated sarcastic statements show different processing patterns than non-exaggerated ones?**
+   - Check the `model_exaggeration` output for the `type:exaggeration` interaction
+
+2. **Is the sarcasm effect (slower RT for sarcastic vs literal) stronger in exaggerated or non-exaggerated items?**
+   - See the descriptive statistics and t-test results above
+
+3. **Does exaggeration interact with format (direct vs indirect)?**
+   - Check for the 3-way interaction `format:type:exaggeration`
+
+### Theoretical Predictions:
+
+- **If exaggeration facilitates sarcasm processing:** We expect smaller (or negative) sarcasm effects for exaggerated items (faster/easier to process)
+
+- **If exaggeration increases processing difficulty:** We expect larger positive sarcasm effects for exaggerated items (slower to process)
+
+- **If exaggeration doesn't matter:** No significant interaction between type and exaggeration
