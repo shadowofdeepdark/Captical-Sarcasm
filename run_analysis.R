@@ -25,8 +25,11 @@ cat("========================================\n")
 cat("1. READING AND TIDYING DATA\n")
 cat("========================================\n\n")
 
-## Read files line-by-line
-ldata <- c(read_lines('results_prod.csv'), read_lines('results_prod_sona.csv'))
+## Read files line-by-line from BOTH SONA and Prolific data
+ldata <- c(read_lines('results_prod_sona.csv'), read_lines('prolific_results.csv'))
+cat("Data sources:\n")
+cat(" - SONA data: results_prod_sona.csv\n")
+cat(" - Prolific data: prolific_results.csv\n\n")
 
 ## Get age data
 adata <- str_subset(ldata,'age,.*EnterReturn')

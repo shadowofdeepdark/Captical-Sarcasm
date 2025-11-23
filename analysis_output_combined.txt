@@ -1,0 +1,309 @@
+
+========================================
+Loading packages...
+========================================
+
+
+Attaching package: 'dplyr'
+
+The following objects are masked from 'package:stats':
+
+    filter, lag
+
+The following objects are masked from 'package:base':
+
+    intersect, setdiff, setequal, union
+
+Loading required package: Matrix
+
+Attaching package: 'Matrix'
+
+The following objects are masked from 'package:tidyr':
+
+    expand, pack, unpack
+
+Packages loaded successfully!
+
+========================================
+1. READING AND TIDYING DATA
+========================================
+
+Data sources:
+ - SONA data: results_prod_sona.csv
+ - Prolific data: prolific_results.csv
+
+Age data loaded: 91 participants
+Experimental data loaded: 26891 observations
+Participants with age data: 26891 unique IDs
+Participants without age data: 0 observations
+Question accuracy calculated
+RT calculated
+
+========================================
+2. LOADING STIMULI WITH EXAGGERATION
+========================================
+
+New names:
+* `type` -> `type...6`
+* `type` -> `type...9`
+* `` -> `...20`
+Distribution of items by exaggeration:
+# A tibble: 2 x 2
+  exaggeration        n
+  <fct>           <int>
+1 non-exaggerated    11
+2 exaggerated        21
+
+========================================
+3. CALCULATING RESIDUAL RT
+========================================
+
+Residual RT coefficients calculated
+
+========================================
+4. FILTERING AND CLEANING DATA
+========================================
+
+Filtered to critical region (all ages)
+Total observations: 2888 
+Unique participants: 91 
+  - With age data: 2888 observations
+  - Without age data: 0 observations
+
+Data cleaning summary:
+ - 98 RTs removed (< 200ms)
+ - 57 outliers removed (RT > 3 SDs)
+ - 34 outliers removed (RRT > 3 SDs)
+
+========================================
+5. DESCRIPTIVE STATISTICS
+========================================
+
+Mean RT by Format, Type, and Exaggeration:
+# A tibble: 8 x 7
+  format   type      exaggeration        n mean_RT sd_RT se_RT
+  <chr>    <chr>     <fct>           <int>   <dbl> <dbl> <dbl>
+1 direct   literal   non-exaggerated   258    473.  210. 13.1 
+2 direct   literal   exaggerated       429    403.  148.  7.17
+3 direct   sarcastic non-exaggerated   213    409.  139.  9.54
+4 direct   sarcastic exaggerated       468    442.  181.  8.36
+5 indirect literal   non-exaggerated   254    472.  173. 10.9 
+6 indirect literal   exaggerated       439    424.  165.  7.90
+7 indirect sarcastic non-exaggerated   225    442.  158. 10.6 
+8 indirect sarcastic exaggerated       447    449.  164.  7.74
+
+Sarcasm Effect (Sarcastic - Literal) by Exaggeration:
+# A tibble: 4 x 5
+  format   exaggeration    literal sarcastic sarcasm_effect
+  <chr>    <fct>             <dbl>     <dbl>          <dbl>
+1 direct   non-exaggerated    473.      409.          -63.7
+2 indirect non-exaggerated    472.      442.          -30.7
+3 direct   exaggerated        403.      442.           38.2
+4 indirect exaggerated        424.      449.           24.7
+
+========================================
+6. STATISTICAL MODELS
+========================================
+
+--- MODEL 1: Full 3-Way Interaction ---
+Formula: RT ~ format * type * exaggeration
+
+Full model converged!
+
+Linear mixed model fit by REML ['lmerMod']
+Formula: RT ~ format * type * exaggeration + (1 | id) + (1 | item_name)
+   Data: edata
+Control: lmerControl(optimizer = "bobyqa")
+
+REML criterion at convergence: 34374
+
+Scaled residuals: 
+   Min     1Q Median     3Q    Max 
+-2.938 -0.521 -0.126  0.330 11.774 
+
+Random effects:
+ Groups    Name        Variance Std.Dev.
+ id        (Intercept) 11859    108.9   
+ item_name (Intercept)  2087     45.7   
+ Residual              15060    122.7   
+Number of obs: 2733, groups:  id, 91; item_name, 32
+
+Fixed effects:
+                            Estimate Std. Error t value
+(Intercept)                 437.2273    14.4476   30.26
+format1                      -7.4971     2.4912   -3.01
+type1                        -0.0701     2.5150   -0.03
+exaggeration1                11.7345     8.8547    1.33
+format1:type1                 0.9586     2.5000    0.38
+format1:exaggeration1        -0.2292     2.4956   -0.09
+type1:exaggeration1           4.0647     2.8290    1.44
+format1:type1:exaggeration1   2.7959     2.5060    1.12
+
+Correlation of Fixed Effects:
+            (Intr) formt1 type1  exggr1 frmt1:t1 frmt1:x1 typ1:1
+format1      0.001                                              
+type1       -0.008 -0.006                                       
+exaggeratn1  0.191  0.003 -0.017                                
+formt1:typ1 -0.001 -0.042  0.006 -0.005                         
+frmt1:xggr1  0.002  0.299 -0.017  0.001 -0.059                  
+typ1:xggrt1 -0.009 -0.024  0.322 -0.017  0.012    0.007         
+frmt1:ty1:1 -0.003 -0.060  0.010 -0.002  0.315   -0.043   -0.002
+
+
+========================================
+7. SEPARATE MODELS FOR EACH EXAGGERATION CONDITION
+========================================
+
+--- MODEL 2A: EXAGGERATED ITEMS ONLY ---
+
+Sample size (exaggerated):
+ - Observations: 1887 
+ - Participants: 91 
+ - Items: 21 
+
+Descriptive Statistics (Exaggerated):
+# A tibble: 4 x 5
+  format   type          n mean_RT sd_RT
+  <fct>    <fct>     <int>   <dbl> <dbl>
+1 direct   literal     429    403.  148.
+2 direct   sarcastic   468    442.  181.
+3 indirect literal     439    424.  165.
+4 indirect sarcastic   447    449.  164.
+
+Sarcasm Effect (Exaggerated):
+# A tibble: 2 x 4
+  format   literal sarcastic sarcasm_effect
+  <fct>      <dbl>     <dbl>          <dbl>
+1 direct      403.      442.           38.2
+2 indirect    424.      449.           24.7
+
+Model Summary (Exaggerated Items):
+Linear mixed model fit by REML ['lmerMod']
+Formula: RT ~ format * type + (1 | id) + (1 | item_name)
+   Data: edata_exag
+Control: lmerControl(optimizer = "bobyqa")
+
+REML criterion at convergence: 22445
+
+Scaled residuals: 
+   Min     1Q Median     3Q    Max 
+-2.964 -0.524 -0.134  0.320  8.789 
+
+Random effects:
+ Groups    Name        Variance Std.Dev.
+ id        (Intercept) 11563    107.5   
+ item_name (Intercept)  1583     39.8   
+ Residual              14687    121.2   
+Number of obs: 1783, groups:  id, 91; item_name, 21
+
+Fixed effects:
+              Estimate Std. Error t value
+(Intercept)     425.65      14.52   29.32
+format1          -7.40       2.92   -2.54
+type1            -4.48       3.14   -1.42
+format1:type1    -1.93       2.90   -0.67
+
+Correlation of Fixed Effects:
+            (Intr) formt1 type1 
+format1     -0.002              
+type1        0.000  0.035       
+formt1:typ1  0.003  0.025 -0.015
+
+
+========================================
+--- MODEL 2B: NON-EXAGGERATED ITEMS ONLY ---
+
+Sample size (non-exaggerated):
+ - Observations: 1001 
+ - Participants: 91 
+ - Items: 11 
+
+Descriptive Statistics (Non-Exaggerated):
+# A tibble: 4 x 5
+  format   type          n mean_RT sd_RT
+  <fct>    <fct>     <int>   <dbl> <dbl>
+1 direct   literal     258    473.  210.
+2 direct   sarcastic   213    409.  139.
+3 indirect literal     254    472.  173.
+4 indirect sarcastic   225    442.  158.
+
+Sarcasm Effect (Non-Exaggerated):
+# A tibble: 2 x 4
+  format   literal sarcastic sarcasm_effect
+  <fct>      <dbl>     <dbl>          <dbl>
+1 direct      473.      409.          -63.7
+2 indirect    472.      442.          -30.7
+
+Model Summary (Non-Exaggerated Items):
+Linear mixed model fit by REML ['lmerMod']
+Formula: RT ~ format * type + (1 | id) + (1 | item_name)
+   Data: edata_nonexag
+Control: lmerControl(optimizer = "bobyqa")
+
+REML criterion at convergence: 12064
+
+Scaled residuals: 
+   Min     1Q Median     3Q    Max 
+-2.701 -0.563 -0.095  0.321 10.804 
+
+Random effects:
+ Groups    Name        Variance Std.Dev.
+ id        (Intercept) 12565    112.1   
+ item_name (Intercept)  3094     55.6   
+ Residual              15388    124.0   
+Number of obs: 950, groups:  id, 91; item_name, 11
+
+Fixed effects:
+              Estimate Std. Error t value
+(Intercept)     448.86      20.88   21.50
+format1          -8.01       4.08   -1.97
+type1             6.38       5.06    1.26
+format1:type1     3.35       4.12    0.81
+
+Correlation of Fixed Effects:
+            (Intr) formt1 type1 
+format1      0.002              
+type1       -0.018 -0.011       
+formt1:typ1 -0.004 -0.077  0.007
+
+
+========================================
+8. PAIRED T-TEST: EXAGGERATED vs NON-EXAGGERATED
+========================================
+
+N participants: 91 
+
+
+	Paired t-test
+
+data:  exag_effects and nonexag_effects
+t = 3, df = 86, p-value = 0.01
+alternative hypothesis: true mean difference is not equal to 0
+95 percent confidence interval:
+ 10 80
+sample estimates:
+mean difference 
+             45 
+
+
+Mean sarcasm effect (exaggerated):     20 ms
+Mean sarcasm effect (non-exaggerated): -23 ms
+Difference:                             44 ms
+
+========================================
+ANALYSIS COMPLETE!
+========================================
+
+Key findings to check:
+1. Descriptive statistics show RT patterns by exaggeration
+2. Full model tests 3-way interaction
+3. Separate models show if format×type pattern differs
+4. T-test directly compares sarcasm effects
+
+Interpretation:
+- Smaller effect in exaggerated → facilitation
+- Larger effect in exaggerated → interference
+- Similar effects → no modulation
+
+========================================
+
